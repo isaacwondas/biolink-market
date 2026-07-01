@@ -43,19 +43,17 @@ export async function loginAction(formData: FormData) {
   }
 
   const user = authData.user;
-  let isNewVendor = false;
+  let redirectTo = "/admin/dashboard";
 
   if (user && user.email) {
-    // 2. Query your manual table using the email bridge
     const { data: existingVendor } = await supabase
       .from("vendors")
-      .select("username")
+      .select("username, is_onboarded")
       .eq("email", user.email.toLowerCase())
       .maybeSingle();
 
-    // 3. Create the database row dynamically if it's missing
     if (!existingVendor) {
-      isNewVendor = true;
+      // Brand new user — create the row and send to onboard
       const generatedUsername = `vendor-${Math.floor(1000 + Math.random() * 9000)}`;
       const { error: insertError } = await supabase.from("vendors").insert([
         {
@@ -63,17 +61,23 @@ export async function loginAction(formData: FormData) {
           name: user.email.split("@")[0],
           username: generatedUsername,
           views: 0,
+          is_onboarded: false,
         },
       ]);
 
       if (insertError) {
         return { error: "Database sync failed: " + insertError.message };
       }
+
+      redirectTo = "/admin/onboard";
+    } else if (!existingVendor.is_onboarded) {
+      // Existing user but never finished onboarding
+      redirectTo = "/admin/onboard";
+    } else {
+      // Fully onboarded existing user
+      redirectTo = "/admin/dashboard";
     }
   }
-
-  // 4. Fallback or target redirection handling based on routing status
-  const redirectTo = isNewVendor ? "/admin/onboard" : "/admin/dashboard";
 
   return { success: true, redirectTo };
 }

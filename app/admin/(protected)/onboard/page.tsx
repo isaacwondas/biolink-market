@@ -13,28 +13,28 @@ interface BankAccount {
 export default function OnboardingForm() {
   const router = useRouter();
 
-  // Core Business Metadata
   const [formData, setFormData] = useState({
     username: "",
-    name: "",
-    tagline: "", // e.g., "Quality Ankara & Ready-to-wear"
-    location: "", // e.g., "Lagos"
+    business_name: "", // ← was "name"
+    bio_tagline: "", // ← was "tagline"
+    location: "",
     whatsapp: "",
-    instagram: "",
-    tiktok: "",
-    facebook: "",
+    instagram_handle: "", // ← was "instagram"
+    tiktok_handle: "", // ← was "tiktok"
+    facebook_handle: "", // ← was "facebook"
     product_name: "",
     product_price: "",
     description: "",
   });
 
-  // Dynamic Multi-Bank state to fill the side-by-side settlement grid
   const [banks, setBanks] = useState<BankAccount[]>([
     { bank_name: "OPay", account_number: "", account_name: "" },
   ]);
 
   const [userEmail, setUserEmail] = useState<string | null>(null);
   const [imageFile, setImageFile] = useState<File | null>(null);
+  const [avatarFile, setAvatarFile] = useState<File | null>(null); // ← new
+  const [bannerFile, setBannerFile] = useState<File | null>(null); // ← new
   const [uploading, setUploading] = useState(false);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState<{
@@ -62,7 +62,7 @@ export default function OnboardingForm() {
         setUserEmail(session.user.email);
         setFormData((prev) => ({
           ...prev,
-          name: session.user.email!.split("@")[0],
+          business_name: session.user.email!.split("@")[0],
         }));
       }
     };
@@ -78,7 +78,6 @@ export default function OnboardingForm() {
     setFormData((prev) => ({ ...prev, [name]: value }));
   };
 
-  // Handle updates inside the multi-bank nested array matrix
   const handleBankChange = (
     index: number,
     field: keyof BankAccount,
@@ -102,10 +101,19 @@ export default function OnboardingForm() {
     setBanks(banks.filter((_, i) => i !== index));
   };
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files.length > 0) {
-      setImageFile(e.target.files[0]);
-    }
+  // Upload helper
+  const uploadImage = async (file: File, folder: string, prefix: string) => {
+    const fileExt = file.name.split(".").pop();
+    const fileName = `${prefix}-${Date.now()}.${fileExt}`;
+    const filePath = `${folder}/${fileName}`;
+    const { error } = await supabase.storage
+      .from("product-images")
+      .upload(filePath, file);
+    if (error) throw error;
+    const { data } = supabase.storage
+      .from("product-images")
+      .getPublicUrl(filePath);
+    return data.publicUrl;
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -113,7 +121,11 @@ export default function OnboardingForm() {
     setLoading(true);
     setMessage(null);
 
-    if (!formData.username || !formData.name || !formData.product_name) {
+    if (
+      !formData.username ||
+      !formData.business_name ||
+      !formData.product_name
+    ) {
       setMessage({
         type: "error",
         text: "Please fill out all required fields.",
@@ -123,63 +135,97 @@ export default function OnboardingForm() {
     }
 
     try {
+      setUploading(true);
+      const usernameSlug = formData.username.trim().toLowerCase();
+
+      // Upload product image
       let finalImageUrl = "";
       if (imageFile) {
-        setUploading(true);
-        const fileExt = imageFile.name.split(".").pop();
-        const fileName = `${formData.username.trim().toLowerCase()}-${Date.now()}.${fileExt}`;
-        const filePath = `products/${fileName}`;
-
-        const { error: uploadError } = await supabase.storage
-          .from("product-images")
-          .upload(filePath, imageFile);
-        if (uploadError) throw uploadError;
-
-        const { data: publicUrlData } = supabase.storage
-          .from("product-images")
-          .getPublicUrl(filePath);
-        finalImageUrl = publicUrlData.publicUrl;
-        setUploading(false);
+        finalImageUrl = await uploadImage(imageFile, "products", usernameSlug);
       }
 
+      // Upload avatar image ← new
+      let avatarUrl = "";
+      if (avatarFile) {
+        avatarUrl = await uploadImage(avatarFile, "avatars", usernameSlug);
+      }
+
+      // Upload banner image ← new
+      let bannerUrl = "";
+      if (bannerFile) {
+        bannerUrl = await uploadImage(bannerFile, "banners", usernameSlug);
+      }
+
+      setUploading(false);
+
+      const targetIdentifier = userEmail || usernameSlug;
       const formattedPrice = formData.product_price.trim()
         ? formData.product_price.replace(/[^0-9]/g, "")
         : null;
-      const targetIdentifier =
-        userEmail || formData.username.trim().toLowerCase();
 
-      const { error } = await supabase
+      // 1. Update vendors table with correct column names
+      const { data: vendorData, error: vendorError } = await supabase
         .from("vendors")
         .update({
-          username: formData.username.trim().toLowerCase(),
-          name: formData.name,
-          tagline: formData.tagline,
+          username: usernameSlug,
+          business_name: formData.business_name, // ← fixed
+          bio_tagline: formData.bio_tagline, // ← fixed
           location: formData.location,
           whatsapp: formData.whatsapp,
-          instagram_handle: formData.instagram,
-          tiktok: formData.tiktok,
-          facebook: formData.facebook,
-          bank_settlement_nodes: banks, // Saved cleanly as jsonb array
+          instagram_handle: formData.instagram_handle, // ← fixed
+          tiktok_handle: formData.tiktok_handle, // ← fixed
+          facebook_handle: formData.facebook_handle, // ← fixed
           product_name: formData.product_name,
           product_price: formattedPrice,
-          product_image: finalImageUrl,
+          product_image: finalImageUrl || undefined,
           description: formData.description,
+          avatar_image: avatarUrl || undefined, // ← new
+          banner_image: bannerUrl || undefined, // ← new
+          is_onboarded: true,
         })
-        .eq(userEmail ? "email" : "username", targetIdentifier.toLowerCase());
+        .eq(userEmail ? "email" : "username", targetIdentifier.toLowerCase())
+        .select("id")
+        .single();
 
-      if (error) throw error;
+      if (vendorError) throw vendorError;
+
+      // 2. Insert banks into vendor_banks table ← fixed (was bank_settlement_nodes jsonb)
+      if (vendorData?.id && banks.length > 0) {
+        // Delete old banks first to avoid duplicates on re-onboard
+        await supabase
+          .from("vendor_banks")
+          .delete()
+          .eq("vendor_id", vendorData.id);
+
+        const bankRows = banks
+          .filter((b) => b.account_number.trim() !== "")
+          .map((b) => ({
+            vendor_id: vendorData.id,
+            bank_name: b.bank_name,
+            account_number: b.account_number,
+            account_name: b.account_name,
+          }));
+
+        if (bankRows.length > 0) {
+          const { error: bankError } = await supabase
+            .from("vendor_banks")
+            .insert(bankRows);
+          if (bankError) throw bankError;
+        }
+      }
 
       setMessage({
         type: "success",
-        text: `🎉 Setup Complete! Your premium storefront "biomarket.com/${formData.username.toLowerCase()}" is now fully configured and live. Redirecting to your dashboard...`,
+        text: `🎉 Setup Complete! Your storefront is now live. Redirecting to your dashboard...`,
       });
 
-      // 🔄 Automatically transition the user to their dashboard after 2 seconds
       setTimeout(() => {
-        router.push("/dashboard");
+        router.push("/admin/dashboard"); // ← fixed (was "/dashboard")
       }, 2000);
 
       setImageFile(null);
+      setAvatarFile(null);
+      setBannerFile(null);
     } catch (err: any) {
       setMessage({ type: "error", text: err.message || "An error occurred." });
     } finally {
@@ -193,11 +239,10 @@ export default function OnboardingForm() {
       <div className="w-full max-w-2xl my-auto space-y-6 py-4">
         <div className="text-center space-y-1">
           <h1 className="text-2xl font-bold tracking-tight text-neutral-900">
-            Storefront Control Setup
+            Storefront Setup
           </h1>
           <p className="text-xs text-neutral-500">
-            Configure the parameters that inject directly into your single-page
-            layout templates.
+            Configure your storefront profile and product listing.
           </p>
         </div>
 
@@ -214,15 +259,15 @@ export default function OnboardingForm() {
             </div>
           )}
 
-          {/* SECTION 1: Brand & Layout Copy Context */}
+          {/* SECTION 1: Brand Identity */}
           <div className="bg-white border border-neutral-200 rounded-2xl p-5 space-y-4 shadow-sm">
             <h2 className="text-xs font-bold uppercase tracking-wider text-[#044766]">
-              1. Brand Identity Header
+              1. Brand Identity
             </h2>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="space-y-1">
                 <label className="text-[11px] text-neutral-500 font-medium uppercase">
-                  Store Path Handle*
+                  Store Handle*
                 </label>
                 <div className="flex rounded-xl bg-neutral-50 border border-neutral-200 focus-within:border-[#044766] focus-within:ring-1 focus-within:ring-[#044766] transition-all overflow-hidden">
                   <span className="text-neutral-400 pl-3 py-2.5 text-xs select-none bg-neutral-100 pr-2 border-r border-neutral-200 flex items-center">
@@ -241,13 +286,13 @@ export default function OnboardingForm() {
               </div>
               <div className="space-y-1">
                 <label className="text-[11px] text-neutral-500 font-medium uppercase">
-                  Brand Display Title*
+                  Business Name*
                 </label>
                 <input
                   type="text"
-                  name="name"
+                  name="business_name"
                   required
-                  value={formData.name}
+                  value={formData.business_name}
                   onChange={handleChange}
                   placeholder="Ada Fashion Hub"
                   className="w-full bg-neutral-50 border border-neutral-200 rounded-xl p-2.5 text-xs text-neutral-800 focus:outline-none focus:border-[#044766] focus:ring-1 focus:ring-[#044766] transition-all"
@@ -257,12 +302,12 @@ export default function OnboardingForm() {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="space-y-1">
                 <label className="text-[11px] text-neutral-500 font-medium uppercase">
-                  Tagline / Niche Focus Context
+                  Bio / Tagline
                 </label>
                 <input
                   type="text"
-                  name="tagline"
-                  value={formData.tagline}
+                  name="bio_tagline"
+                  value={formData.bio_tagline}
                   onChange={handleChange}
                   placeholder="Quality Ankara & Ready-to-wear"
                   className="w-full bg-neutral-50 border border-neutral-200 rounded-xl p-2.5 text-xs text-neutral-800 focus:outline-none focus:border-[#044766] focus:ring-1 focus:ring-[#044766] transition-all"
@@ -270,7 +315,7 @@ export default function OnboardingForm() {
               </div>
               <div className="space-y-1">
                 <label className="text-[11px] text-neutral-500 font-medium uppercase">
-                  Regional Location Tag
+                  Location
                 </label>
                 <input
                   type="text"
@@ -282,13 +327,43 @@ export default function OnboardingForm() {
                 />
               </div>
             </div>
+
+            {/* Avatar & Banner uploads ← new */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-1">
+                <label className="text-[11px] text-neutral-500 font-medium uppercase">
+                  Profile / Avatar Image
+                </label>
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={(e) =>
+                    e.target.files && setAvatarFile(e.target.files[0])
+                  }
+                  className="w-full bg-neutral-50 border border-neutral-200 rounded-xl p-2 text-xs text-neutral-600 focus:outline-none file:mr-4 file:py-1 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-neutral-200 file:text-neutral-700"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-[11px] text-neutral-500 font-medium uppercase">
+                  Banner Image
+                </label>
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={(e) =>
+                    e.target.files && setBannerFile(e.target.files[0])
+                  }
+                  className="w-full bg-neutral-50 border border-neutral-200 rounded-xl p-2 text-xs text-neutral-600 focus:outline-none file:mr-4 file:py-1 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-neutral-200 file:text-neutral-700"
+                />
+              </div>
+            </div>
           </div>
 
-          {/* SECTION 2: Dynamic Multi-Bank Array Matrix */}
+          {/* SECTION 2: Bank Details */}
           <div className="bg-white border border-neutral-200 rounded-2xl p-5 space-y-4 shadow-sm">
             <div className="flex items-center justify-between">
               <h2 className="text-xs font-bold uppercase tracking-wider text-[#044766]">
-                2. Layout Settlement Grid Nodes (Max 3)
+                2. Bank Details (Max 3)
               </h2>
               {banks.length < 3 && (
                 <button
@@ -296,22 +371,19 @@ export default function OnboardingForm() {
                   onClick={addBankSlot}
                   className="text-[11px] text-[#044766] hover:underline font-bold"
                 >
-                  + Add Bank Option
+                  + Add Bank
                 </button>
               )}
             </div>
-
             <div className="space-y-4 divide-y divide-neutral-100">
               {banks.map((bank, index) => (
                 <div
                   key={index}
-                  className={`grid grid-cols-1 md:grid-cols-3 gap-3 ${
-                    index > 0 ? "pt-4" : ""
-                  }`}
+                  className={`grid grid-cols-1 md:grid-cols-3 gap-3 ${index > 0 ? "pt-4" : ""}`}
                 >
                   <div className="space-y-1">
                     <label className="text-[11px] text-neutral-400 font-medium">
-                      Bank Provider #{index + 1}
+                      Bank #{index + 1}
                     </label>
                     <select
                       value={bank.bank_name}
@@ -341,7 +413,7 @@ export default function OnboardingForm() {
                           e.target.value,
                         )
                       }
-                      placeholder="04725675101"
+                      placeholder="0472567510"
                       className="w-full bg-neutral-50 border border-neutral-200 rounded-xl p-2.5 text-xs text-neutral-800 focus:outline-none focus:border-[#044766] font-mono"
                     />
                   </div>
@@ -379,15 +451,15 @@ export default function OnboardingForm() {
             </div>
           </div>
 
-          {/* SECTION 3: Social & Communications Integration */}
+          {/* SECTION 3: Social Links */}
           <div className="bg-white border border-neutral-200 rounded-2xl p-5 space-y-4 shadow-sm">
             <h2 className="text-xs font-bold uppercase tracking-wider text-[#044766]">
-              3. Connected Social Matrix
+              3. Social & Contact
             </h2>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-1">
                 <label className="text-[11px] text-neutral-500 font-medium uppercase">
-                  WhatsApp Hotlink Node*
+                  WhatsApp Number*
                 </label>
                 <input
                   type="text"
@@ -401,12 +473,12 @@ export default function OnboardingForm() {
               </div>
               <div className="space-y-1">
                 <label className="text-[11px] text-neutral-500 font-medium uppercase">
-                  Instagram Path
+                  Instagram URL
                 </label>
                 <input
                   type="url"
-                  name="instagram"
-                  value={formData.instagram}
+                  name="instagram_handle"
+                  value={formData.instagram_handle}
                   onChange={handleChange}
                   placeholder="https://instagram.com/ada_hub"
                   className="w-full bg-neutral-50 border border-neutral-200 rounded-xl p-2.5 text-xs text-neutral-800 focus:outline-none focus:border-[#044766]"
@@ -414,12 +486,12 @@ export default function OnboardingForm() {
               </div>
               <div className="space-y-1">
                 <label className="text-[11px] text-neutral-500 font-medium uppercase">
-                  TikTok Profile Link
+                  TikTok URL
                 </label>
                 <input
                   type="url"
-                  name="tiktok"
-                  value={formData.tiktok}
+                  name="tiktok_handle"
+                  value={formData.tiktok_handle}
                   onChange={handleChange}
                   placeholder="https://tiktok.com/@ada_hub"
                   className="w-full bg-neutral-50 border border-neutral-200 rounded-xl p-2.5 text-xs text-neutral-800 focus:outline-none focus:border-[#044766]"
@@ -427,12 +499,12 @@ export default function OnboardingForm() {
               </div>
               <div className="space-y-1">
                 <label className="text-[11px] text-neutral-500 font-medium uppercase">
-                  Facebook Page Link
+                  Facebook URL
                 </label>
                 <input
                   type="url"
-                  name="facebook"
-                  value={formData.facebook}
+                  name="facebook_handle"
+                  value={formData.facebook_handle}
                   onChange={handleChange}
                   placeholder="https://facebook.com/adahub"
                   className="w-full bg-neutral-50 border border-neutral-200 rounded-xl p-2.5 text-xs text-neutral-800 focus:outline-none focus:border-[#044766]"
@@ -441,15 +513,15 @@ export default function OnboardingForm() {
             </div>
           </div>
 
-          {/* SECTION 4: Showcased Items Generation */}
+          {/* SECTION 4: Product */}
           <div className="bg-white border border-neutral-200 rounded-2xl p-5 space-y-4 shadow-sm">
             <h2 className="text-xs font-bold uppercase tracking-wider text-[#044766]">
-              4. Premium Item Showcase Setup
+              4. Featured Product
             </h2>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <div className="md:col-span-2 space-y-1.5">
                 <label className="text-[11px] text-neutral-500 font-medium uppercase">
-                  Featured Product Name*
+                  Product Name*
                 </label>
                 <input
                   type="text"
@@ -463,7 +535,7 @@ export default function OnboardingForm() {
               </div>
               <div className="space-y-1.5">
                 <label className="text-[11px] text-neutral-500 font-medium uppercase">
-                  Listing Price (₦)
+                  Price (₦)
                 </label>
                 <input
                   type="text"
@@ -477,29 +549,29 @@ export default function OnboardingForm() {
             </div>
             <div className="space-y-1.5">
               <label className="text-[11px] text-neutral-500 font-medium uppercase">
-                Product Display Asset
+                Product Image
               </label>
               <input
-                id="product_image_file"
                 type="file"
                 accept="image/*"
-                onChange={handleFileChange}
+                onChange={(e) =>
+                  e.target.files && setImageFile(e.target.files[0])
+                }
                 className="w-full bg-neutral-50 border border-neutral-200 rounded-xl p-2 text-xs text-neutral-600 focus:outline-none file:mr-4 file:py-1 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-neutral-200 file:text-neutral-700 hover:file:bg-neutral-300"
               />
             </div>
           </div>
 
-          {/* Primary Submit Action */}
           <button
             type="submit"
             disabled={loading || uploading}
             className="w-full bg-[#044766] hover:bg-[#03354c] text-white font-semibold py-3 px-6 rounded-xl text-center transition-all shadow-md uppercase tracking-wider text-xs disabled:bg-neutral-200 disabled:text-neutral-400"
           >
             {uploading
-              ? "Uploading media files..."
+              ? "Uploading images..."
               : loading
-                ? "Updating configuration profiles..."
-                : "🚀 Save Parameters & Launch Live Grid"}
+                ? "Saving your storefront..."
+                : "🚀 Save & Launch Storefront"}
           </button>
         </form>
       </div>
